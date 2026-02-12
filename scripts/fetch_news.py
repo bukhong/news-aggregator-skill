@@ -6,12 +6,18 @@ import sys
 import time
 import re
 import concurrent.futures
+import os
 from datetime import datetime
+import subprocess
 
 # Headers for scraping to avoid basic bot detection
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
+
+from bs4 import XMLParsedAsHTMLWarning
+import warnings
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 def filter_items(items, keyword=None):
     if not keyword:
@@ -369,20 +375,231 @@ def fetch_producthunt(limit=5, keyword=None):
         return filter_items(items, keyword)[:limit]
     except: return []
 
+# --- New Fetchers (RSS/API) ---
+
+from rss_parser import fetch_rss_feed
+
+# fetch_tldr_ai removed: all known feed URLs (feed.tldr.tech/ai, tldr.tech/ai/rss) return 404.
+
+def fetch_huggingface_papers(limit=5, keyword=None):
+    items = []
+    # User requested a "Good Solution" without fallback.
+    # We use Playwright (which is installed) to bypass the SSL/fingerprinting connection issues.
+    # Logic extracted to scripts/fetch_hf_papers_playwright.py for reusability
+    
+    try:
+        import subprocess
+        import sys
+        import os
+        
+        # Locate the standalone script
+        script_path = os.path.join(os.path.dirname(__file__), "fetch_hf_papers_playwright.py")
+        
+        # Run the playwright script in a subprocess
+        cmd = [sys.executable, script_path, "--limit", str(limit)]
+        # Increase timeout for detail fetch (10 pages * 5s = 50s + startup)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout)
+            for paper in data:
+                items.append({
+                    "source": "HF Papers",
+                    "title": paper['title'],
+                    "url": paper['url'],
+                    "github": paper.get('github', ''),
+                    "heat": paper.get('heat', ''),
+                    "time": datetime.now().strftime("%Y-%m-%d"), # Daily Papers are today's papers
+                    "summary": paper.get('summary', '')
+                })
+        else:
+             print(f"HF Playwright Failed: {result.stderr}", file=sys.stderr)
+             
+    except Exception as e:
+        print(f"HF Playwright Exception: {e}", file=sys.stderr)
+            
+    return filter_items(items[:limit], keyword)
+
+
+# --- Source Definitions (Global for Access) ---
+
+AI_NEWSLETTER_SOURCES = [
+    # Bens Bites is protected by Cloudflare -> Use Playwright
+    ("Ben's Bites", "https://bensbites.beehiiv.com/feed"), 
+    ("Interconnects", "https://www.interconnects.ai/feed"),  # Fixed: needs www.
+    ("One Useful Thing", "https://www.oneusefulthing.org/feed"), 
+    # Removed: The Rundown (beehiiv feed 404), The Neuron (403 Forbidden)
+    ("ChinAI", "https://chinai.substack.com/feed"),
+    ("Memia", "https://memia.substack.com/feed"),
+    ("AI to ROI", "https://ai2roi.substack.com/feed"),
+    ("KDnuggets", "https://www.kdnuggets.com/feed"),
+]
+
+# ... (rest of sources)
+
+def fetch_rss_with_playwright(url, source_name, limit=5):
+    """Fallback fetcher using Playwright to bypass Cloudflare"""
+    try:
+        # Special handling for Ben's Bites which uses custom Homepage Scraper
+        if "Ben's Bites" in source_name:
+             script_path = os.path.join(os.path.dirname(__file__), "fetch_bensbites.py")
+             # No arguments needed, script hardcodes URL
+             cmd = [sys.executable, script_path]
+             
+             
+             result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+             
+             if result.returncode == 0:
+                 try:
+                    data = json.loads(result.stdout)
+                    if not data: raise ValueError("Empty JSON")
+                    return data
+                 except Exception:
+                    # Fallback for Ben's Bites if parsing fails
+                    return [{
+                        "source": "Ben's Bites",
+                        "title": "Ben's Bites (Visit Site)",
+                        "url": "https://bensbites.beehiiv.com/",
+                        "time": "Today",
+                        "summary": "Auto-fetch failed. Please verify on site.",
+                    }]
+             else:
+                 return [{
+                        "source": "Ben's Bites",
+                        "title": "Ben's Bites (Check Site)",
+                        "url": "https://bensbites.beehiiv.com/",
+                        "time": "Today",
+                        "summary": "Fetch process failed.",
+                    }]
+
+        # User generic Playwright script for all OTHER protected feeds
+        
+        if result.returncode == 0:
+            from rss_parser import parse_rss_content
+            # Result stdout should be the HTML/XML content
+            return parse_rss_content(result.stdout, source_name, limit)
+        else:
+            print(f"Playwright fetch failed for {source_name}: {result.stderr}", file=sys.stderr)
+            return []
+    except Exception as e:
+        print(f"Playwright exception for {source_name}: {e}", file=sys.stderr)
+        return []
+
+
+PODCAST_SOURCES = [
+    ("Lex Fridman", "https://lexfridman.com/feed/podcast"),
+    # Removed: Cognitive Rev (megaphone.fm feed 404)
+    ("80000 Hours", "https://feeds.transistor.fm/80-000-hours-podcast"),
+    ("Latent Space", "https://latent.space/feed"),
+]
+
+ESSAY_SOURCES = [
+    ("Wait But Why", "https://waitbutwhy.com/feed"),
+    ("James Clear", "https://jamesclear.com/feed"),
+    ("Farnam Street", "https://fs.blog/feed"),
+    ("Paul Graham", "http://www.aaronsw.com/2002/feeds/pgessays.rss"), 
+    ("Scott Young", "https://www.scotthyoung.com/blog/feed/"),
+    ("Dan Koe", "https://thedankoe.com/feed/"),
+]
+
+def fetch_ai_newsletters(limit=5, keyword=None):
+    """Aggregate Fetcher for AI Newsletters"""
+    all_items = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fetch_rss_feed, url, name, 3): name for name, url in AI_NEWSLETTER_SOURCES}
+        for future in concurrent.futures.as_completed(futures):
+            all_items.extend(future.result())
+    return filter_items(all_items, keyword)[:limit]
+
+def fetch_podcasts(limit=5, keyword=None):
+    all_items = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fetch_rss_feed, url, name, 3): name for name, url in PODCAST_SOURCES}
+        for future in concurrent.futures.as_completed(futures):
+            all_items.extend(future.result())
+    return filter_items(all_items, keyword)[:limit]
+
+def fetch_essays(limit=5, keyword=None):
+    all_items = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fetch_rss_feed, url, name, 3): name for name, url in ESSAY_SOURCES}
+        for future in concurrent.futures.as_completed(futures):
+            all_items.extend(future.result())
+    return filter_items(all_items, keyword)[:limit]
+
+def create_single_rss_fetcher(url, name):
+    def fetcher(limit=5, keyword=None):
+        return filter_items(fetch_rss_feed(url, name, limit), keyword)[:limit]
+    return fetcher
+
+
+def save_report(data, source_name, out_dir):
+    """
+    Saves JSON and generates a simple Markdown report.
+    """
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+        
+    # Sanitize source name for filename
+    safe_name = "".join([c if c.isalnum() else "_" for c in source_name]).lower()
+    timestamp = datetime.now().strftime("%H%M")
+    
+    # 1. Save JSON
+    json_path = os.path.join(out_dir, f"{safe_name}_{timestamp}.json")
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        
+    return json_path
+
 def main():
     parser = argparse.ArgumentParser()
     sources_map = {
         'hackernews': fetch_hackernews, 'weibo': fetch_weibo, 'github': fetch_github,
         '36kr': fetch_36kr, 'v2ex': fetch_v2ex, 'tencent': fetch_tencent,
-        'wallstreetcn': fetch_wallstreetcn, 'producthunt': fetch_producthunt
+        'wallstreetcn': fetch_wallstreetcn, 'producthunt': fetch_producthunt,
+        # Aggregates
+        'huggingface': fetch_huggingface_papers,
+        'ai_newsletters': fetch_ai_newsletters, 'podcasts': fetch_podcasts,
+        'essays': fetch_essays
     }
+
+    # Dynamic Registration of Sub-sources
+    # AI Newsletters
+    for name, url in AI_NEWSLETTER_SOURCES:
+        key = name.lower().replace(' ', '').replace("'", "")
+        # Check if this source needs Playwright
+        if "Ben's Bites" in name or "The Rundown" in name:
+             sources_map[key] = lambda limit=10, k=None, u=url, n=name: filter_items(fetch_rss_with_playwright(u, n, limit), k)[:limit]
+        else:
+             sources_map[key] = create_single_rss_fetcher(url, name)
+        
+    # Podcasts
+    for name, url in PODCAST_SOURCES:
+        key = name.lower().replace(' ', '')
+        sources_map[key] = create_single_rss_fetcher(url, name)
+
+    # Essays
+    for name, url in ESSAY_SOURCES:
+        key = name.lower().replace(' ', '')
+        sources_map[key] = create_single_rss_fetcher(url, name)
     
-    parser.add_argument('--source', default='all', help='Source(s) to fetch from (comma-separated)')
+    parser.add_argument('--source', default='all', help='Source(s) to fetch from (comma-separated). Now supports sub-sources like "chinai", "paulgraham"')
     parser.add_argument('--limit', type=int, default=10, help='Limit per source. Default 10')
     parser.add_argument('--keyword', help='Comma-sep keyword filter')
     parser.add_argument('--deep', action='store_true', help='Download article content for detailed summarization')
+    parser.add_argument('--save', action='store_true', help='Save output to reports directory (JSON + MD)')
+    parser.add_argument('--no-save', action='store_true', dest='no_save', help='Skip saving JSON files to disk (only output to stdout)')
+    parser.add_argument('--outdir', help='Custom output directory for saved reports')
+    parser.add_argument('--list-sources', action='store_true', help='List all available source keys')
     
     args = parser.parse_args()
+
+    if args.list_sources:
+        print(f"{'Source Key':<20} | {'Source Name'}")
+        print("-" * 40)
+        for key in sorted(sources_map.keys()):
+            print(f"{key:<20}")
+        return
     
     to_run = []
     if args.source == 'all':
@@ -443,6 +660,18 @@ def main():
         results = enrich_items_with_content(results)
         
     print(json.dumps(results, indent=2, ensure_ascii=False))
+    
+    # Save Report if requested or if running a single source (implicit convenience)
+    # Skip saving when --no-save is set (agent reads from stdout)
+    if not getattr(args, 'no_save', False) and (args.save or args.source != 'all'):
+        if args.outdir:
+            out_dir = args.outdir
+        else:
+            today = datetime.now().strftime('%Y-%m-%d')
+            out_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'reports', today)
+            
+        md_file = save_report(results, args.source, out_dir)
+        sys.stderr.write(f"\n[Saved] Raw Data: {md_file} (Agent to process)\n")
 
 if __name__ == "__main__":
     main()

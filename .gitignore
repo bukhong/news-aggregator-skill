@@ -35,6 +35,10 @@ ehthumbs.db
 Thumbs.db
 
 # Temporary files from skill execution
+*_stderr.log
+*.log
+*.png
+*_debug.txt
 # Generated Data and Reports
 *.json
 reports/

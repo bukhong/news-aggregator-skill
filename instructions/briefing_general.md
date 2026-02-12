@@ -24,7 +24,7 @@ This file defines how the **AI Agent** should construct the Daily Morning Briefi
 ## 📝 Report Structure
 
 ### Part 1: 🌍 Global Scan (全网速览)
-*   **Goal**: Broad coverage of the most important news from all 8 sources.
+*   **Goal**: Broad coverage of the most important news across all sources.
 *   **Selection Logic**:
     *   Prioritize "Breaking News" and "High Heat" items.
     *   Ensure diversity: Include at least 1 item from Finance, 1 from China Tech, 1 from Silicon Valley.

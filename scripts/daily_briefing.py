@@ -5,6 +5,7 @@ import os
 from fetch_news import (
     fetch_hackernews, fetch_github, fetch_producthunt, 
     fetch_weibo, fetch_36kr, fetch_tencent, fetch_v2ex, fetch_wallstreetcn,
+    fetch_huggingface_papers, fetch_ai_newsletters, fetch_podcasts, fetch_essays,
     enrich_items_with_content
 )
 
@@ -103,6 +104,35 @@ PROFILES = {
             "sources": [(fetch_github, 20, None)],
             "enrich": True
         }
+    },
+
+
+    # 6. AI Daily (AI Deep Dive)
+    "ai_daily": {
+        "newsletter_picks": {
+            "sources": [(fetch_ai_newsletters, 100, None)], # Capture all (approx 30-40)
+            "enrich": True
+        },
+        "huggingface_papers": {
+            "sources": [(fetch_huggingface_papers, 20, None)], 
+            "enrich": True
+        }
+    },
+
+    # 7. Reading List (Podcasts & Essays)
+    "reading_list": {
+        "essays": {
+            "sources": [(fetch_essays, 50, None)], # Capture all
+            "enrich": True
+        },
+        "podcasts": {
+            "sources": [(fetch_podcasts, 50, None)],
+            "enrich": False 
+        },
+        "hn_deep": {
+            "sources": [(fetch_hackernews, 20, "blog,essay,philosophy,book")],
+            "enrich": True
+        }
     }
 }
 
@@ -127,10 +157,6 @@ def fetch_section(section_name, config):
             except Exception as e:
                 print(f"[{section_name}] {fname} failed: {e}", file=sys.stderr)
 
-    # Enforce Smart Fill Logic logic if needed? 
-    # Actually, for the briefing, we are already fetching heavily (e.g. 5 from 8 sources = 40 items for global).
-    # So we likely don't need explicit smart fill here if we fetch enough upfront.
-    
     # Enrich if requested
     if config["enrich"] and results:
         print(f"[{section_name}] Enriching content for {len(results)} items...", file=sys.stderr)
@@ -138,9 +164,41 @@ def fetch_section(section_name, config):
         
     return results
 
+def save_individual_sources(data, base_dir):
+    """
+    Splits the aggregated data by 'source' and saves individual JSON files.
+    """
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
+        
+    source_map = {}
+    total_count = 0
+    
+    # Flatten and grouping
+    for section, items in data.items():
+        for item in items:
+            src = item.get('source', 'Unknown')
+            # Sanitize filename
+            safe_name = "".join([c if c.isalnum() else "_" for c in src])
+            if safe_name not in source_map:
+                source_map[safe_name] = []
+            source_map[safe_name].append(item)
+            total_count += 1
+            
+    # Save
+    print(f"Saving {len(source_map)} individual source files to {base_dir}...", file=sys.stderr)
+    for src, items in source_map.items():
+        fpath = os.path.join(base_dir, f"{src}.json")
+        with open(fpath, 'w', encoding='utf-8') as f:
+            json.dump(items, f, indent=2, ensure_ascii=False)
+
+    return list(source_map.keys())
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--profile', default='general', choices=PROFILES.keys(), help='Briefing Profile: general, finance, tech, social')
+    parser.add_argument('--profile', default='general', choices=PROFILES.keys(), help='Briefing Profile')
+    parser.add_argument('--outdir', help='Optional output directory for individual files')
+    parser.add_argument('--no-save', action='store_true', help='Skip saving JSON files to disk (only output to stdout)')
     args = parser.parse_args()
     
     config = PROFILES.get(args.profile, PROFILES['general'])
@@ -150,10 +208,34 @@ def main():
     # Fetch all sections
     for section, sec_config in config.items():
         final_data[section] = fetch_section(section, sec_config)
+    
+    # Determine Output Directory
+    # Default to reports/YYYY-MM-DD
+    if args.outdir:
+        out_dir = args.outdir
+    else:
+        from datetime import datetime
+        today = datetime.now().strftime('%Y-%m-%d')
+        out_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'reports', today)
         
-    # Output result
-    print(json.dumps(final_data, indent=2, ensure_ascii=False))
+    # Validating existence or creating is handled in save logic, but let's be explicitly safe
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
 
+    # Output result to stdout (for agent to read)
+    print(json.dumps(final_data, indent=2, ensure_ascii=False))
+    
+    if not args.no_save:
+        # Save Unified JSON
+        unified_path = os.path.join(out_dir, f"{args.profile}_briefing_unified.json")
+        with open(unified_path, 'w', encoding='utf-8') as f:
+            json.dump(final_data, f, indent=2, ensure_ascii=False)
+            
+        # Save Individual Sources
+        sources_saved = save_individual_sources(final_data, out_dir)
+        print(f"Saved unified report and {len(sources_saved)} individual source files to {out_dir}", file=sys.stderr)
+    else:
+        print(f"JSON output sent to stdout only (--no-save mode)", file=sys.stderr)
 
 if __name__ == "__main__":
     main()
