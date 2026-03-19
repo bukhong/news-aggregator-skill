@@ -331,6 +331,202 @@ def fetch_tencent(limit=5, keyword=None):
         return filter_items(items, keyword)[:limit]
     except: return []
 
+def fetch_bbc_chinese(limit=5, keyword=None):
+    """BBC Chinese — already in Simplified Chinese, no translation needed."""
+    try:
+        resp = requests.get(
+            "https://feeds.bbci.co.uk/zhongwen/simp/rss.xml",
+            headers=HEADERS, timeout=10
+        )
+        soup = BeautifulSoup(resp.content, "xml")
+        items = []
+        for entry in soup.find_all("item")[:limit * 2]:
+            title_tag = entry.find("title")
+            link_tag  = entry.find("link")
+            pub_tag   = entry.find("pubDate")
+            desc_tag  = entry.find("description")
+
+            title = title_tag.get_text(strip=True) if title_tag else ""
+            url   = link_tag.get_text(strip=True)  if link_tag  else ""
+            pub   = pub_tag.get_text(strip=True)    if pub_tag   else ""
+            desc  = desc_tag.get_text(strip=True)   if desc_tag  else ""
+
+            # Simplify date
+            try:
+                from email.utils import parsedate_to_datetime
+                pub = parsedate_to_datetime(pub).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                pass
+
+            if not title:
+                continue
+            items.append({
+                "source":  "BBC Chinese",
+                "title":   title,
+                "title_cn": title,   # already Chinese
+                "url":     url,
+                "time":    pub,
+                "heat":    "",
+                "summary": desc[:80] if desc else "",
+            })
+        return filter_items(items, keyword)[:limit]
+    except Exception as e:
+        print(f"BBC Chinese error: {e}", file=sys.stderr)
+        return []
+
+
+def fetch_cnn(limit=5, keyword=None):
+    """CNN World News — scrape edition.cnn.com/world."""
+    try:
+        resp = requests.get(
+            "https://edition.cnn.com/world",
+            headers=HEADERS, timeout=12, verify=False
+        )
+        import urllib3; urllib3.disable_warnings()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        items = []
+        seen = set()
+
+        # CNN uses various card selectors; try multiple
+        selectors = [
+            "a.container__link",
+            "a.card__headline",
+            "h3.cd__headline a",
+            "h2.cd__headline a",
+            ".headline__text",
+        ]
+        anchors = []
+        for sel in selectors:
+            anchors.extend(soup.select(sel))
+            if len(anchors) >= limit * 3:
+                break
+
+        for a in anchors:
+            title = a.get_text(strip=True)
+            href  = a.get("href", "")
+            if not title or not href or title in seen:
+                continue
+            if len(title) < 15:
+                continue
+            seen.add(title)
+            url = href if href.startswith("http") else f"https://edition.cnn.com{href}"
+            items.append({
+                "source": "CNN",
+                "title":  title,
+                "url":    url,
+                "time":   datetime.now().strftime("%Y-%m-%d"),
+                "heat":   "",
+            })
+            if len(items) >= limit * 2:
+                break
+
+        return filter_items(items, keyword)[:limit]
+    except Exception as e:
+        print(f"CNN error: {e}", file=sys.stderr)
+        return []
+
+
+def fetch_reuters(limit=5, keyword=None):
+    """Reuters — scrape reuters.com/world."""
+    try:
+        import urllib3; urllib3.disable_warnings()
+        resp = requests.get(
+            "https://www.reuters.com/world/",
+            headers={**HEADERS, "Accept-Language": "en-US,en;q=0.9"},
+            timeout=12, verify=False
+        )
+        soup = BeautifulSoup(resp.text, "html.parser")
+        items = []
+        seen = set()
+
+        for a in soup.select("a[data-testid='Heading'], a[class*='heading'], [data-testid='MediaStoryCard'] a"):
+            title = a.get_text(strip=True)
+            href  = a.get("href", "")
+            if not title or not href or title in seen or len(title) < 15:
+                continue
+            seen.add(title)
+            url = href if href.startswith("http") else f"https://www.reuters.com{href}"
+            items.append({
+                "source": "Reuters",
+                "title":  title,
+                "url":    url,
+                "time":   datetime.now().strftime("%Y-%m-%d"),
+                "heat":   "",
+            })
+            if len(items) >= limit * 2:
+                break
+
+        # Fallback: grab any article links
+        if not items:
+            for a in soup.find_all("a", href=True):
+                href  = a.get("href", "")
+                title = a.get_text(strip=True)
+                if "/world/" not in href and "/business/" not in href:
+                    continue
+                if not title or len(title) < 15 or title in seen:
+                    continue
+                seen.add(title)
+                url = href if href.startswith("http") else f"https://www.reuters.com{href}"
+                items.append({
+                    "source": "Reuters",
+                    "title":  title,
+                    "url":    url,
+                    "time":   datetime.now().strftime("%Y-%m-%d"),
+                    "heat":   "",
+                })
+                if len(items) >= limit * 2:
+                    break
+
+        return filter_items(items, keyword)[:limit]
+    except Exception as e:
+        print(f"Reuters error: {e}", file=sys.stderr)
+        return []
+
+
+def fetch_scmp(limit=5, keyword=None):
+    """South China Morning Post — RSS feed."""
+    try:
+        resp = requests.get(
+            "http://www.scmp.com/rss/5/feed",   # World feed (follows redirect)
+            headers=HEADERS, timeout=12
+        )
+        soup = BeautifulSoup(resp.content, "xml")
+        items = []
+        for entry in soup.find_all("item")[:limit * 2]:
+            title_tag = entry.find("title")
+            link_tag  = entry.find("link")
+            pub_tag   = entry.find("pubDate")
+            desc_tag  = entry.find("description")
+
+            title = title_tag.get_text(strip=True) if title_tag else ""
+            url   = link_tag.get_text(strip=True)  if link_tag  else ""
+            pub   = pub_tag.get_text(strip=True)    if pub_tag   else ""
+            desc  = BeautifulSoup(
+                desc_tag.get_text(strip=True), "html.parser"
+            ).get_text(strip=True)[:100] if desc_tag else ""
+
+            try:
+                from email.utils import parsedate_to_datetime
+                pub = parsedate_to_datetime(pub).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                pass
+
+            if not title:
+                continue
+            items.append({
+                "source":  "SCMP",
+                "title":   title,
+                "url":     url,
+                "time":    pub,
+                "heat":    "",
+                "summary": desc,
+            })
+        return filter_items(items, keyword)[:limit]
+    except Exception as e:
+        print(f"SCMP error: {e}", file=sys.stderr)
+        return []
+
+
 def fetch_wallstreetcn(limit=5, keyword=None):
     try:
         url = "https://api-one.wallstcn.com/apiv1/content/information-flow?channel=global-channel&accept=article&limit=30"
@@ -619,12 +815,22 @@ def main():
         'hackernews': fetch_hackernews, 'weibo': fetch_weibo, 'github': fetch_github,
         '36kr': fetch_36kr, 'v2ex': fetch_v2ex, 'tencent': fetch_tencent,
         'wallstreetcn': fetch_wallstreetcn, 'producthunt': fetch_producthunt,
+        # International news
+        'bbc': fetch_bbc_chinese, 'bbcchinese': fetch_bbc_chinese,
+        'cnn': fetch_cnn,
+        'reuters': fetch_reuters,
+        'scmp': fetch_scmp,
         # Aggregates
         'huggingface': fetch_huggingface_papers,
         'ai_newsletters': fetch_ai_newsletters, 'podcasts': fetch_podcasts,
         'essays': fetch_essays,
         # Standalone AI Sources
         'latentspace_ainews': fetch_latentspace_ainews,
+        # Convenience: all international news at once
+        'international': lambda limit=5, kw=None: (
+            fetch_bbc_chinese(limit, kw) + fetch_cnn(limit, kw) +
+            fetch_reuters(limit, kw) + fetch_scmp(limit, kw)
+        ),
     }
 
     # Dynamic Registration of Sub-sources
