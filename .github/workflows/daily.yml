@@ -11,12 +11,12 @@ on:
         required: false
         default: "tech"
         type: choice
-        options: [tech, ai, finance, social, general]
+        options: [general, tech, ai, finance, social, world]
 
 jobs:
   briefing:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -32,16 +32,17 @@ jobs:
 
       - name: Run daily briefing
         env:
-          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
-          EMAIL_FROM:     ${{ secrets.EMAIL_FROM }}
-          EMAIL_TO:       ${{ secrets.EMAIL_TO }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          SMTP_HOST:      ${{ secrets.SMTP_HOST }}
-          SMTP_PORT:      ${{ secrets.SMTP_PORT }}
+          FEISHU_WEBHOOK:   ${{ secrets.FEISHU_WEBHOOK }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EMAIL_FROM:       ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO:         ${{ secrets.EMAIL_TO }}
+          EMAIL_PASSWORD:   ${{ secrets.EMAIL_PASSWORD }}
+          SMTP_HOST:        ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:        ${{ secrets.SMTP_PORT }}
           PYTHONIOENCODING: utf-8
         run: |
-          PROFILE="${{ github.event.inputs.profile || 'tech' }}"
-          python scripts/run_daily.py --profile "$PROFILE"
+          PROFILE="${{ github.event.inputs.profile || 'general' }}"
+          python scripts/run_daily.py --profile "$PROFILE" --no-email
 
       - name: Upload report artifact
         uses: actions/upload-artifact@v4
