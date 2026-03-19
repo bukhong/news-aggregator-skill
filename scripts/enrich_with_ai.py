@@ -1,5 +1,5 @@
 """
-Enrich raw news JSON with AI-generated Chinese content using the Anthropic API.
+Enrich raw news JSON with AI-generated Chinese content using the OpenAI API.
 
 For each item adds:
   title_cn   — Chinese translation of the title
@@ -11,8 +11,8 @@ Usage:
     python3 scripts/enrich_with_ai.py raw.json   # overwrites in-place
 
 Requires:
-    ANTHROPIC_API_KEY environment variable
-    pip install anthropic
+    OPENAI_API_KEY environment variable
+    pip install openai
 """
 
 import json
@@ -22,21 +22,22 @@ import argparse
 from pathlib import Path
 
 BATCH_SIZE = 8   # items per API call
+MODEL = "gpt-4o-mini"
 
 
 def enrich(items: list) -> list:
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
-        print("[AI Enrich] SKIP — ANTHROPIC_API_KEY not set", file=sys.stderr)
+        print("[AI Enrich] SKIP — OPENAI_API_KEY not set", file=sys.stderr)
         return items
 
     try:
-        import anthropic
+        from openai import OpenAI
     except ImportError:
-        print("[AI Enrich] SKIP — anthropic package not installed (pip install anthropic)", file=sys.stderr)
+        print("[AI Enrich] SKIP — openai package not installed (pip install openai)", file=sys.stderr)
         return items
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = OpenAI(api_key=api_key)
     enriched = []
 
     for i in range(0, len(items), BATCH_SIZE):
@@ -66,19 +67,21 @@ def enrich(items: list) -> list:
 ]"""
 
         try:
-            resp = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+            resp = client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": prompt}],
                 max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}]
+                response_format={"type": "json_object"},
             )
-            text = resp.content[0].text.strip()
+            text = resp.choices[0].message.content.strip()
 
-            # Parse JSON — strip markdown fences if present
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-            results = json.loads(text)
+            # gpt-4o-mini with json_object mode wraps in {"items": [...]}
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                # extract the first list value
+                results = next((v for v in parsed.values() if isinstance(v, list)), [])
+            else:
+                results = parsed
 
             # Merge back
             for r in results:
@@ -111,7 +114,7 @@ def main():
 
     out_path = Path(args.out) if args.out else path
     out_path.write_text(json.dumps(enriched, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[AI Enrich] Saved {len(enriched)} items → {out_path}", file=sys.stderr)
+    print(f"[AI Enrich] Saved {len(enriched)} items -> {out_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":
