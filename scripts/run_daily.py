@@ -79,8 +79,8 @@ def step_fetch(sources: str, limit: int = 15) -> Path:
 
 def step_enrich(json_path: Path) -> Path:
     """AI translate + summarize. Returns same path (enriched in-place)."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("[Enrich] SKIP — ANTHROPIC_API_KEY not set")
+    if not os.environ.get("OPENAI_API_KEY"):
+        print("[Enrich] SKIP — OPENAI_API_KEY not set")
         return json_path
 
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
